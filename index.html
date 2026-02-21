@@ -1,44 +1,94 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Edge Impulse ESP32 Controller</title>
-    <script src="edge-impulse-standalone.js"></script> 
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Scanner Console</title>
+    <script src="edge-impulse-standalone.js"></script>
+    <style>
+        body { font-family: sans-serif; background: #f4f4f9; text-align: center; padding: 20px; }
+        #camera-container { width: 100%; max-width: 400px; margin: auto; border: 3px solid #3d61ff; border-radius: 10px; overflow: hidden; background: #000; }
+        .controls { margin-top: 20px; display: flex; flex-direction: column; gap: 10px; align-items: center; }
+        input { padding: 10px; border-radius: 5px; border: 1px solid #ccc; width: 200px; text-align: center; }
+        .btn { padding: 15px 30px; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; color: white; width: 220px; }
+        #connectBtn { background-color: #4CAF50; }
+        #addBtn { background-color: #3d61ff; }
+        #removeBtn { background-color: #ff4c4c; }
+        #status { font-weight: bold; color: #555; margin: 10px; }
+    </style>
 </head>
 <body>
-    <h2>AI Classifier & LCD Control</h2>
-    <div id="camera-container"></div>
+
+    <h2>AI Scanner Console</h2>
+    
+    <div class="controls">
+        <input type="text" id="ipInput" placeholder="Enter ESP32 IP (e.g. 192.168.1.50)">
+        <button id="connectBtn" class="btn">Connect to LCD</button>
+        <div id="status">Status: Disconnected</div>
+    </div>
+
     <hr>
-    <button id="addBtn" style="padding:20px">Add Item</button>
-    <button id="removeBtn" style="padding:20px">Remove Last Item</button>
-    <p>Status: <span id="status">Connecting...</span></p>
+
+    <div id="camera-container">
+        <p style="color: white; padding: 50px;">Camera Feed Loading...</p>
+    </div>
+
+    <div class="controls">
+        <button id="addBtn" class="btn">Add Item Manually</button>
+        <button id="removeBtn" class="btn">Remove Last Item</button>
+    </div>
 
     <script>
-        const gateway = `ws://192.168.1.XX/ws`; // Replace with your ESP32 IP
-        let websocket = new WebSocket(gateway);
-        
-        // 1. Initialize the Classifier
-        const classifier = new EdgeImpulseClassifier();
-        
-        async function startInference() {
-            await classifier.init();
-            
-            // This loop mimics the Edge Impulse Mobile Client behavior
-            setInterval(async () => {
-                const results = await classifier.classify(); 
-                // results = { result: { classification: { "ObjectA": 0.95, "ObjectB": 0.05 } } }
-                
-                if (results.result.classification["YourObject"] > 0.8) {
-                    console.log("Object Detected!");
-                    websocket.send("ADD"); // Auto-trigger ESP32
+        let socket;
+        const ipInput = document.getElementById('ipInput');
+        const connectBtn = document.getElementById('connectBtn');
+        const statusDiv = document.getElementById('status');
+
+        // --- WebSocket Logic ---
+        connectBtn.onclick = () => {
+            const ip = ipInput.value.trim();
+            if (!ip) return alert("Please enter an IP address");
+
+            statusDiv.innerText = "Connecting...";
+            socket = new WebSocket(`ws://${ip}/ws`);
+
+            socket.onopen = () => {
+                statusDiv.innerText = "Status: Connected to LCD";
+                statusDiv.style.color = "green";
+                connectBtn.innerText = "Connected";
+                connectBtn.style.backgroundColor = "#888";
+            };
+
+            socket.onclose = () => {
+                statusDiv.innerText = "Status: Connection Lost";
+                statusDiv.style.color = "red";
+                connectBtn.innerText = "Reconnect";
+                connectBtn.style.backgroundColor = "#4CAF50";
+            };
+
+            socket.onerror = (error) => {
+                alert("Could not connect to ESP32. Check the IP and WiFi.");
+            };
+        };
+
+        // --- Manual Buttons ---
+        document.getElementById('addBtn').onclick = () => {
+            if (socket && socket.readyState === WebSocket.OPEN) socket.send("ADD");
+        };
+
+        document.getElementById('removeBtn').onclick = () => {
+            if (socket && socket.readyState === WebSocket.OPEN) socket.send("REMOVE");
+        };
+
+        // --- AI Logic (Placeholder for Edge Impulse WASM) ---
+        // This function would be triggered by your model's classification loop
+        function onObjectDetected(label, confidence) {
+            if (label === "YourItemName" && confidence > 0.8) {
+                if (socket && socket.readyState === WebSocket.OPEN) {
+                    socket.send("ADD");
                 }
-            }, 500); // Check every 500ms
+            }
         }
-
-        // 2. Manual Buttons
-        document.getElementById('addBtn').onclick = () => websocket.send("ADD");
-        document.getElementById('removeBtn').onclick = () => websocket.send("REMOVE");
-
-        websocket.onopen = () => { document.getElementById('status').innerText = "Connected to ESP32"; };
     </script>
 </body>
 </html>
