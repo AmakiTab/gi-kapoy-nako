@@ -2,158 +2,174 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>AI Scanner Console</title>
-    
-    <script src="./edge-impulse-standalone.js" id="ei-script"></script>
-    
+    <script src="./edge-impulse-standalone.js"></script>
     <style>
-        body { font-family: sans-serif; background: #f4f4f9; text-align: center; padding: 20px; }
-        #camera-container { width: 100%; max-width: 400px; margin: auto; border: 3px solid #3d61ff; border-radius: 10px; overflow: hidden; background: #000; position: relative; min-height: 300px; display: flex; align-items: center; justify-content: center;}
-        video { width: 100%; height: auto; display: block; }
-        .controls { margin-top: 20px; display: flex; flex-direction: column; gap: 10px; align-items: center; }
-        input { padding: 10px; border-radius: 5px; border: 1px solid #ccc; width: 220px; text-align: center; font-size: 16px; }
-        .btn { padding: 15px 30px; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; color: white; width: 240px; font-size: 16px; }
-        .btn:disabled { background-color: #ccc !important; cursor: not-allowed; }
-        #startBtn { background-color: #ff9800; }
-        #connectBtn { background-color: #4CAF50; }
-        #addBtn { background-color: #3d61ff; }
-        #removeBtn { background-color: #ff4c4c; }
-        #resetBtn { background-color: #555; }
-        #status { font-weight: bold; color: #555; margin: 10px; }
-        #ai-label { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.7); color: #00ff00; padding: 5px 10px; border-radius: 5px; z-index: 10; font-family: monospace; }
+        body { font-family: -apple-system, sans-serif; text-align: center; background: #f4f4f9; margin: 0; padding: 20px; }
+        .container { max-width: 420px; margin: auto; background: white; padding: 20px; border-radius: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+        #camera-container { width: 100%; position: relative; margin: 15px 0; }
+        video { width: 100%; border-radius: 15px; display: none; border: 3px solid #3d61ff; background: #000; }
+        .inference-display { font-size: 22px; font-weight: bold; color: #3d61ff; margin: 15px 0; min-height: 32px; }
+        .controls { display: flex; flex-direction: column; gap: 10px; align-items: center; }
+        input { width: 100%; padding: 12px; margin: 10px 0; border: 1px solid #ddd; border-radius: 10px; box-sizing: border-box; font-size: 16px; text-align: center; }
+        .btn { width: 100%; padding: 15px; border: none; border-radius: 10px; font-size: 18px; font-weight: bold; cursor: pointer; color: white; }
+        #connectBtn { background: #4CAF50; }
+        #startBtn { background: #ff9800; }
+        #addBtn { background: #3d61ff; display: none; margin-top: 10px; }
+        #status { font-weight: bold; color: #666; margin: 10px; font-size: 14px; }
+        #ai-label { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.7); color: #00ff00; padding: 5px 10px; border-radius: 5px; font-size: 14px; z-index: 10; }
     </style>
 </head>
 <body>
 
+<div class="container">
     <h2>AI Scanner Console</h2>
     
     <div class="controls">
-        <input type="text" id="ipInput" placeholder="Enter ESP32 IP">
+        <input type="text" id="espIp" placeholder="Enter ESP32 IP (e.g. 192.168.1.50)">
         <button id="connectBtn" class="btn">1. Connect to LCD</button>
-        <button id="startBtn" class="btn" disabled>Waiting for Library...</button>
+        <button id="startBtn" class="btn">2. Start Camera & AI</button>
         <div id="status">Status: Disconnected</div>
     </div>
 
-    <hr>
-
     <div id="camera-container">
         <div id="ai-label">AI: Offline</div>
-        <p id="loading-text" style="color: white; padding: 50px;">Attempting to load AI Engine...</p>
+        <video id="webcam" autoplay muted playsinline></video>
+        <div id="top-result" class="inference-display">Standby</div>
     </div>
 
-    <div class="controls">
-        <button id="addBtn" class="btn">Manual Add (+)</button>
-        <button id="removeBtn" class="btn">Manual Remove (-)</button>
-        <button id="resetBtn" class="btn" onclick="sendToESP32('RESET')">Reset LCD Count</button>
-    </div>
+    <button id="addBtn" class="btn">➕ Add Detected Item</button>
+</div>
 
-    <script>
-    let socket;
+<script>
     let classifier;
+    let socket;
+    let currentDetectedItem = null;
+    const targets = ["Deodorant", "Power bank", "Grips", "Hot sauce"];
+    
     const startBtn = document.getElementById('startBtn');
-    const loadingText = document.getElementById('loading-text');
+    const addBtn = document.getElementById('addBtn');
+    const statusDiv = document.getElementById('status');
+    const video = document.getElementById('webcam');
 
-    // Your specific labels
-    const MY_LABELS = ["deodorant", "power bank", "grips", "hot sauce"];
-
-    async function initializeSystem() {
-        console.log("Checking for AI library...");
+    // 1. WebSocket Connection Logic
+    document.getElementById('connectBtn').onclick = () => {
+        const ip = document.getElementById('espIp').value.trim();
+        if (!ip) return alert("Enter ESP32 IP");
         
-        // Force retry if GitHub initial load failed
-        if (typeof EdgeImpulseClassifier === 'undefined') {
-            console.log("Initial load failed. Retrying with relative path...");
-            const script = document.createElement('script');
-            script.src = "./edge-impulse-standalone.js?v=" + Date.now(); 
-            document.head.appendChild(script);
-        }
+        statusDiv.innerText = "Connecting...";
+        socket = new WebSocket(`ws://${ip}/ws`);
+        
+        socket.onopen = () => {
+            statusDiv.innerText = "Status: Linked to LCD";
+            statusDiv.style.color = "green";
+        };
+        socket.onerror = () => {
+            statusDiv.innerText = "Status: Connection Failed";
+            statusDiv.style.color = "red";
+        };
+    };
 
-        setTimeout(() => {
-            if (typeof EdgeImpulseClassifier !== 'undefined') {
-                startBtn.disabled = false;
-                startBtn.innerText = "2. Start Camera & AI";
-                loadingText.innerText = "AI Engine Linked!";
-                loadingText.style.color = "#00ff00";
-            } else {
-                loadingText.innerText = "Error: File missing from GitHub server.";
-                loadingText.style.color = "red";
-                console.error("404: edge-impulse-standalone.js not found in root directory.");
-            }
-        }, 2500);
-    }
-
-    window.onload = initializeSystem;
-
+    // 2. Camera & AI Initialization (Using your Smart Cart method)
     startBtn.onclick = async () => {
         try {
-            startBtn.innerText = "Waking up AI...";
+            startBtn.style.display = 'none';
+            statusDiv.innerText = "Status: Initializing AI...";
+            
             classifier = new EdgeImpulseClassifier();
-            
-            // Forces the library to find the .wasm file in your GitHub repo
-            if (classifier.setWasmPath) {
-                classifier.setWasmPath('./edge-impulse-standalone.wasm');
-            }
-
             await classifier.init();
-            const devices = await classifier.getDevices();
-            if (!devices.length) throw new Error("No camera found. Grant permissions.");
             
-            await classifier.start(devices[0].deviceId, document.getElementById('camera-container'));
+            const props = classifier.getProperties();
             
-            loadingText.style.display = 'none';
-            startBtn.innerText = "SCANNER ACTIVE";
-            startBtn.disabled = true;
+            // Standard getUserMedia call
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { facingMode: "environment", width: 640, height: 640 } 
+            });
+            
+            video.srcObject = stream;
+            video.style.display = 'block';
+            await video.play();
 
-            runInference();
-        } catch (err) {
-            alert("Error: " + err.message);
-            startBtn.innerText = "Retry Start";
-            startBtn.disabled = false;
-        }
-    };
-
-    async function runInference() {
-        while (true) {
-            try {
-                const result = await classifier.classify();
-                if (result.results && result.results.length > 0) {
-                    const top = result.results[0];
-                    const labelClean = top.label.toLowerCase().trim();
+            statusDiv.innerText = "Status: AI Active";
+            
+            async function inferenceCycle() {
+                if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                    const pixels = getPixelData(video, props.input_width, props.input_height);
                     
-                    document.getElementById('ai-label').innerText = `AI: ${top.label} (${(top.value * 100).toFixed(1)}%)`;
-
-                    // Detection Logic
-                    if (MY_LABELS.includes(labelClean) && top.value > 0.85) {
-                        sendToESP32("ADD:" + top.label); 
-                        await new Promise(r => setTimeout(r, 3000)); // 3s cooldown
+                    try {
+                        const result = await classifier.classify(pixels);
+                        if (result.results) {
+                            processResults(result.results);
+                        }
+                    } catch (e) {
+                        console.error("AI Error:", e);
                     }
                 }
-            } catch (e) { console.log("Frame dropped"); }
-            await new Promise(r => setTimeout(r, 200));
+                setTimeout(inferenceCycle, 200); 
+            }
+            inferenceCycle();
+        } catch (e) {
+            statusDiv.innerText = "Status: Camera Error " + e.message;
         }
-    }
-
-    connectBtn.onclick = () => {
-        const ip = document.getElementById('ipInput').value.trim();
-        if (!ip) return alert("Enter ESP32 IP");
-        socket = new WebSocket(`ws://${ip}/ws`);
-        socket.onopen = () => { 
-            document.getElementById('status').innerText = "Linked to LCD"; 
-            document.getElementById('status').style.color = "green";
-        };
-        socket.onerror = () => { 
-            alert("Check IP Address. Ensure ESP32 is on the same Wi-Fi."); 
-        };
     };
 
-    function sendToESP32(cmd) {
-        if (socket && socket.readyState === WebSocket.OPEN) {
-            socket.send(cmd);
+    // 3. Pixel Data Processing (Your exact crop logic)
+    function getPixelData(video, targetW, targetH) {
+        const canvas = document.createElement('canvas');
+        canvas.width = targetW;
+        canvas.height = targetH;
+        const ctx = canvas.getContext('2d', { alpha: false });
+
+        const s = Math.min(video.videoWidth, video.videoHeight);
+        const x = (video.videoWidth - s) / 2;
+        const y = (video.videoHeight - s) / 2;
+
+        ctx.drawImage(video, x, y, s, s, 0, 0, targetW, targetH);
+        const imgData = ctx.getImageData(0, 0, targetW, targetH).data;
+        
+        const pixels = [];
+        for (let i = 0; i < imgData.length; i += 4) {
+            pixels.push(imgData[i]);     // R
+            pixels.push(imgData[i + 1]); // G
+            pixels.push(imgData[i + 2]); // B
+        }
+        return pixels;
+    }
+
+    // 4. Result Handling
+    function processResults(results) {
+        let top = results[0];
+        results.forEach(res => { if (res.value > top.value) top = res; });
+
+        const label = top.label;
+        const conf = (top.value * 100).toFixed(0);
+
+        document.getElementById('ai-label').innerText = `AI: ${label} (${conf}%)`;
+        document.getElementById('top-result').innerText = top.value > 0.5 ? `${label} (${conf}%)` : "Searching...";
+
+        // Show ADD button if it's one of your items and confidence > 80%
+        if (targets.includes(label) && top.value > 0.80) {
+            currentDetectedItem = label;
+            addBtn.style.display = 'block';
+            addBtn.innerText = `➕ Add ${label}`;
+        } else {
+            addBtn.style.display = 'none';
         }
     }
 
-    document.getElementById('addBtn').onclick = () => sendToESP32("ADD:Manual");
-    document.getElementById('removeBtn').onclick = () => sendToESP32("REMOVE");
-    </script>
+    // 5. Send to ESP32
+    addBtn.onclick = () => {
+        if (socket && socket.readyState === WebSocket.OPEN && currentDetectedItem) {
+            socket.send("ADD:" + currentDetectedItem);
+            statusDiv.innerText = `Sent: ${currentDetectedItem}`;
+            // Cooldown to prevent double taps
+            addBtn.disabled = true;
+            setTimeout(() => { addBtn.disabled = false; }, 2000);
+        } else {
+            alert("Connect to LCD first!");
+        }
+    };
+</script>
 </body>
 </html>
