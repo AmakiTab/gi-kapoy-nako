@@ -4,7 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Scanner Console</title>
-    <script src="edge-impulse-standalone.js"></script>
+    
+    <script src="edge-impulse-standalone.js" id="ei-script"></script>
+    
     <style>
         body { font-family: sans-serif; background: #f4f4f9; text-align: center; padding: 20px; }
         #camera-container { width: 100%; max-width: 400px; margin: auto; border: 3px solid #3d61ff; border-radius: 10px; overflow: hidden; background: #000; position: relative; min-height: 300px; display: flex; align-items: center; justify-content: center;}
@@ -12,7 +14,8 @@
         .controls { margin-top: 20px; display: flex; flex-direction: column; gap: 10px; align-items: center; }
         input { padding: 10px; border-radius: 5px; border: 1px solid #ccc; width: 200px; text-align: center; }
         .btn { padding: 15px 30px; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; color: white; width: 220px; }
-        #startBtn { background-color: #ff9800; margin-bottom: 10px; }
+        .btn:disabled { background-color: #ccc !important; cursor: not-allowed; }
+        #startBtn { background-color: #ff9800; }
         #connectBtn { background-color: #4CAF50; }
         #addBtn { background-color: #3d61ff; }
         #removeBtn { background-color: #ff4c4c; }
@@ -27,15 +30,15 @@
     <div class="controls">
         <input type="text" id="ipInput" placeholder="Enter ESP32 IP">
         <button id="connectBtn" class="btn">1. Connect to LCD</button>
-        <button id="startBtn" class="btn">2. Start Camera & AI</button>
+        <button id="startBtn" class="btn" disabled>Wait for Library...</button>
         <div id="status">Status: Disconnected</div>
     </div>
 
     <hr>
 
     <div id="camera-container">
-        <div id="ai-label">AI: Waiting...</div>
-        <p id="loading-text" style="color: white; padding: 50px;">Camera Feed Loading...</p>
+        <div id="ai-label">AI: Offline</div>
+        <p id="loading-text" style="color: white; padding: 50px;">Waiting for Script...</p>
     </div>
 
     <div class="controls">
@@ -46,84 +49,78 @@
     <script>
         let socket;
         let classifier;
-        const ipInput = document.getElementById('ipInput');
-        const connectBtn = document.getElementById('connectBtn');
         const startBtn = document.getElementById('startBtn');
-        const statusDiv = document.getElementById('status');
-        const aiLabel = document.getElementById('ai-label');
+        const loadingText = document.getElementById('loading-text');
 
-        // --- 1. Start Camera and AI Logic ---
+        // Check if the script loaded successfully
+        window.onload = () => {
+            if (typeof EdgeImpulseClassifier !== 'undefined') {
+                startBtn.disabled = false;
+                startBtn.innerText = "2. Start Camera & AI";
+                loadingText.innerText = "Library Ready. Click Start.";
+            } else {
+                loadingText.innerText = "ERROR: edge-impulse-standalone.js not found!";
+                loadingText.style.color = "red";
+            }
+        };
+
         startBtn.onclick = async () => {
             try {
-                startBtn.innerText = "Loading AI Model...";
+                startBtn.innerText = "Initializing AI...";
                 
-                // Initialize Edge Impulse Classifier
+                // Initialize the library
                 classifier = new EdgeImpulseClassifier();
                 await classifier.init();
                 
-                // This starts the camera feed into the container
-                await classifier.init()
+                // Get camera and start
                 const devices = await classifier.getDevices();
+                if (devices.length === 0) throw new Error("No camera found");
+                
                 await classifier.start(devices[0].deviceId, document.getElementById('camera-container'));
                 
-                document.getElementById('loading-text').style.display = 'none';
-                startBtn.innerText = "Scanner Running";
-                startBtn.style.backgroundColor = "#888";
+                loadingText.style.display = 'none';
+                startBtn.innerText = "Scanner Active";
                 startBtn.disabled = true;
 
-                // Start inference loop
                 runInference();
             } catch (err) {
-                console.error(err);
-                alert("Error starting camera: " + err.message);
+                alert("Error: " + err.message);
+                startBtn.innerText = "Try Again";
+                startBtn.disabled = false;
             }
         };
 
         async function runInference() {
             while (true) {
-                const result = await classifier.classify();
-                if (result.results && result.results.length > 0) {
-                    // Find the label with the highest score
-                    const top = result.results[0];
-                    aiLabel.innerText = `AI: ${top.label} (${(top.value * 100).toFixed(1)}%)`;
+                try {
+                    const result = await classifier.classify();
+                    if (result.results && result.results.length > 0) {
+                        const top = result.results[0];
+                        document.getElementById('ai-label').innerText = `AI: ${top.label} (${(top.value * 100).toFixed(1)}%)`;
 
-                    // AUTO-TRIGGER: Change "YourItemName" to your specific label from Edge Impulse
-                    if (top.label === "YourItemName" && top.value > 0.85) {
-                        sendToESP32("ADD");
-                        // Add a small delay so it doesn't count the same object 100 times per second
-                        await new Promise(r => setTimeout(r, 2000)); 
+                        // AUTO-TRIGGER LOGIC
+                        if (top.label.toLowerCase() === "youritem" && top.value > 0.85) {
+                            sendToESP32("ADD");
+                            await new Promise(r => setTimeout(r, 3000)); // 3 second cooldown
+                        }
                     }
+                } catch (e) {
+                    console.error("Inference error", e);
                 }
-                await new Promise(r => setTimeout(r, 200)); // Run every 200ms
+                await new Promise(r => setTimeout(r, 250));
             }
         }
 
-        // --- 2. WebSocket Connection ---
+        // --- WebSocket Logic ---
         connectBtn.onclick = () => {
-            const ip = ipInput.value.trim();
-            if (!ip) return alert("Please enter the ESP32 IP address");
-
-            statusDiv.innerText = "Connecting...";
+            const ip = document.getElementById('ipInput').value.trim();
+            if (!ip) return alert("Enter IP");
             socket = new WebSocket(`ws://${ip}/ws`);
-
-            socket.onopen = () => {
-                statusDiv.innerText = "Status: Connected to LCD";
-                statusDiv.style.color = "green";
-                connectBtn.style.backgroundColor = "#888";
-            };
-
-            socket.onclose = () => {
-                statusDiv.innerText = "Status: Connection Lost";
-                statusDiv.style.color = "red";
-            };
+            socket.onopen = () => { document.getElementById('status').innerText = "Connected!"; };
         };
 
         function sendToESP32(cmd) {
-            if (socket && socket.readyState === WebSocket.OPEN) {
-                socket.send(cmd);
-            } else {
-                console.log("Command: " + cmd + " (Not sent: LCD disconnected)");
-            }
+            if (socket && socket.readyState === WebSocket.OPEN) socket.send(cmd);
         }
 
         document.getElementById('addBtn').onclick = () => sendToESP32("ADD");
