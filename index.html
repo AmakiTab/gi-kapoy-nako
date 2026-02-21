@@ -4,7 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Scanner Console</title>
-    <script src="edge-impulse-standalone.js" id="ei-script"></script>
+    
+    <script src="./edge-impulse-standalone.js" id="ei-script"></script>
+    
     <style>
         body { font-family: sans-serif; background: #f4f4f9; text-align: center; padding: 20px; }
         #camera-container { width: 100%; max-width: 400px; margin: auto; border: 3px solid #3d61ff; border-radius: 10px; overflow: hidden; background: #000; position: relative; min-height: 300px; display: flex; align-items: center; justify-content: center;}
@@ -12,7 +14,7 @@
         .controls { margin-top: 20px; display: flex; flex-direction: column; gap: 10px; align-items: center; }
         input { padding: 10px; border-radius: 5px; border: 1px solid #ccc; width: 220px; text-align: center; font-size: 16px; }
         .btn { padding: 15px 30px; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; color: white; width: 240px; font-size: 16px; }
-        .btn:disabled { background-color: #ccc !important; }
+        .btn:disabled { background-color: #ccc !important; cursor: not-allowed; }
         #startBtn { background-color: #ff9800; }
         #connectBtn { background-color: #4CAF50; }
         #addBtn { background-color: #3d61ff; }
@@ -27,7 +29,7 @@
     <h2>AI Scanner Console</h2>
     
     <div class="controls">
-        <input type="text" id="ipInput" placeholder="Enter ESP32 IP (e.g. 192.168.1.50)">
+        <input type="text" id="ipInput" placeholder="Enter ESP32 IP">
         <button id="connectBtn" class="btn">1. Connect to LCD</button>
         <button id="startBtn" class="btn" disabled>Waiting for Library...</button>
         <div id="status">Status: Disconnected</div>
@@ -37,7 +39,7 @@
 
     <div id="camera-container">
         <div id="ai-label">AI: Offline</div>
-        <p id="loading-text" style="color: white; padding: 50px;">Check browser console if this stays...</p>
+        <p id="loading-text" style="color: white; padding: 50px;">Attempting to load AI Engine...</p>
     </div>
 
     <div class="controls">
@@ -52,21 +54,32 @@
     const startBtn = document.getElementById('startBtn');
     const loadingText = document.getElementById('loading-text');
 
-    // Define your trained labels here exactly as they appear in Edge Impulse
+    // Your specific labels
     const MY_LABELS = ["deodorant", "power bank", "grips", "hot sauce"];
 
     async function initializeSystem() {
+        console.log("Checking for AI library...");
+        
+        // Force retry if GitHub initial load failed
+        if (typeof EdgeImpulseClassifier === 'undefined') {
+            console.log("Initial load failed. Retrying with relative path...");
+            const script = document.createElement('script');
+            script.src = "./edge-impulse-standalone.js?v=" + Date.now(); 
+            document.head.appendChild(script);
+        }
+
         setTimeout(() => {
             if (typeof EdgeImpulseClassifier !== 'undefined') {
                 startBtn.disabled = false;
                 startBtn.innerText = "2. Start Camera & AI";
-                loadingText.innerText = "AI Library Loaded!";
+                loadingText.innerText = "AI Engine Linked!";
                 loadingText.style.color = "#00ff00";
             } else {
-                loadingText.innerText = "Error: edge-impulse-standalone.js not found";
+                loadingText.innerText = "Error: File missing from GitHub server.";
                 loadingText.style.color = "red";
+                console.error("404: edge-impulse-standalone.js not found in root directory.");
             }
-        }, 1000);
+        }, 2500);
     }
 
     window.onload = initializeSystem;
@@ -76,13 +89,14 @@
             startBtn.innerText = "Waking up AI...";
             classifier = new EdgeImpulseClassifier();
             
+            // Forces the library to find the .wasm file in your GitHub repo
             if (classifier.setWasmPath) {
                 classifier.setWasmPath('./edge-impulse-standalone.wasm');
             }
 
             await classifier.init();
             const devices = await classifier.getDevices();
-            if (!devices.length) throw new Error("No camera found");
+            if (!devices.length) throw new Error("No camera found. Grant permissions.");
             
             await classifier.start(devices[0].deviceId, document.getElementById('camera-container'));
             
@@ -93,7 +107,7 @@
             runInference();
         } catch (err) {
             alert("Error: " + err.message);
-            startBtn.innerText = "Retry";
+            startBtn.innerText = "Retry Start";
             startBtn.disabled = false;
         }
     };
@@ -108,16 +122,13 @@
                     
                     document.getElementById('ai-label').innerText = `AI: ${top.label} (${(top.value * 100).toFixed(1)}%)`;
 
-                    // Check if detected item is in our allowed list and confidence is high
+                    // Detection Logic
                     if (MY_LABELS.includes(labelClean) && top.value > 0.85) {
-                        // We send the specific name so the LCD can show it!
                         sendToESP32("ADD:" + top.label); 
-                        
-                        // 3 second cooldown to prevent double-counting
-                        await new Promise(r => setTimeout(r, 3000)); 
+                        await new Promise(r => setTimeout(r, 3000)); // 3s cooldown
                     }
                 }
-            } catch (e) { console.error(e); }
+            } catch (e) { console.log("Frame dropped"); }
             await new Promise(r => setTimeout(r, 200));
         }
     }
@@ -130,7 +141,9 @@
             document.getElementById('status').innerText = "Linked to LCD"; 
             document.getElementById('status').style.color = "green";
         };
-        socket.onerror = () => { alert("Check IP/WiFi"); };
+        socket.onerror = () => { 
+            alert("Check IP Address. Ensure ESP32 is on the same Wi-Fi."); 
+        };
     };
 
     function sendToESP32(cmd) {
