@@ -4,23 +4,22 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Scanner Console</title>
-    
     <script src="edge-impulse-standalone.js" id="ei-script"></script>
-    
     <style>
         body { font-family: sans-serif; background: #f4f4f9; text-align: center; padding: 20px; }
         #camera-container { width: 100%; max-width: 400px; margin: auto; border: 3px solid #3d61ff; border-radius: 10px; overflow: hidden; background: #000; position: relative; min-height: 300px; display: flex; align-items: center; justify-content: center;}
         video { width: 100%; height: auto; display: block; }
         .controls { margin-top: 20px; display: flex; flex-direction: column; gap: 10px; align-items: center; }
-        input { padding: 10px; border-radius: 5px; border: 1px solid #ccc; width: 200px; text-align: center; }
-        .btn { padding: 15px 30px; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; color: white; width: 220px; }
-        .btn:disabled { background-color: #ccc !important; cursor: not-allowed; }
+        input { padding: 10px; border-radius: 5px; border: 1px solid #ccc; width: 220px; text-align: center; font-size: 16px; }
+        .btn { padding: 15px 30px; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; color: white; width: 240px; font-size: 16px; }
+        .btn:disabled { background-color: #ccc !important; }
         #startBtn { background-color: #ff9800; }
         #connectBtn { background-color: #4CAF50; }
         #addBtn { background-color: #3d61ff; }
         #removeBtn { background-color: #ff4c4c; }
+        #resetBtn { background-color: #555; }
         #status { font-weight: bold; color: #555; margin: 10px; }
-        #ai-label { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.7); color: #00ff00; padding: 5px 10px; border-radius: 5px; font-size: 14px; z-index: 10; }
+        #ai-label { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.7); color: #00ff00; padding: 5px 10px; border-radius: 5px; z-index: 10; font-family: monospace; }
     </style>
 </head>
 <body>
@@ -28,9 +27,9 @@
     <h2>AI Scanner Console</h2>
     
     <div class="controls">
-        <input type="text" id="ipInput" placeholder="Enter ESP32 IP">
+        <input type="text" id="ipInput" placeholder="Enter ESP32 IP (e.g. 192.168.1.50)">
         <button id="connectBtn" class="btn">1. Connect to LCD</button>
-        <button id="startBtn" class="btn" disabled>Wait for Library...</button>
+        <button id="startBtn" class="btn" disabled>Waiting for Library...</button>
         <div id="status">Status: Disconnected</div>
     </div>
 
@@ -38,93 +37,110 @@
 
     <div id="camera-container">
         <div id="ai-label">AI: Offline</div>
-        <p id="loading-text" style="color: white; padding: 50px;">Waiting for Script...</p>
+        <p id="loading-text" style="color: white; padding: 50px;">Check browser console if this stays...</p>
     </div>
 
     <div class="controls">
-        <button id="addBtn" class="btn">Add Item Manually</button>
-        <button id="removeBtn" class="btn">Remove Last Item</button>
+        <button id="addBtn" class="btn">Manual Add (+)</button>
+        <button id="removeBtn" class="btn">Manual Remove (-)</button>
+        <button id="resetBtn" class="btn" onclick="sendToESP32('RESET')">Reset LCD Count</button>
     </div>
 
     <script>
-        let socket;
-        let classifier;
-        const startBtn = document.getElementById('startBtn');
-        const loadingText = document.getElementById('loading-text');
+    let socket;
+    let classifier;
+    const startBtn = document.getElementById('startBtn');
+    const loadingText = document.getElementById('loading-text');
 
-        // Check if the script loaded successfully
-        window.onload = () => {
+    // Define your trained labels here exactly as they appear in Edge Impulse
+    const MY_LABELS = ["deodorant", "power bank", "grips", "hot sauce"];
+
+    async function initializeSystem() {
+        setTimeout(() => {
             if (typeof EdgeImpulseClassifier !== 'undefined') {
                 startBtn.disabled = false;
                 startBtn.innerText = "2. Start Camera & AI";
-                loadingText.innerText = "Library Ready. Click Start.";
+                loadingText.innerText = "AI Library Loaded!";
+                loadingText.style.color = "#00ff00";
             } else {
-                loadingText.innerText = "ERROR: edge-impulse-standalone.js not found!";
+                loadingText.innerText = "Error: edge-impulse-standalone.js not found";
                 loadingText.style.color = "red";
             }
-        };
+        }, 1000);
+    }
 
-        startBtn.onclick = async () => {
+    window.onload = initializeSystem;
+
+    startBtn.onclick = async () => {
+        try {
+            startBtn.innerText = "Waking up AI...";
+            classifier = new EdgeImpulseClassifier();
+            
+            if (classifier.setWasmPath) {
+                classifier.setWasmPath('./edge-impulse-standalone.wasm');
+            }
+
+            await classifier.init();
+            const devices = await classifier.getDevices();
+            if (!devices.length) throw new Error("No camera found");
+            
+            await classifier.start(devices[0].deviceId, document.getElementById('camera-container'));
+            
+            loadingText.style.display = 'none';
+            startBtn.innerText = "SCANNER ACTIVE";
+            startBtn.disabled = true;
+
+            runInference();
+        } catch (err) {
+            alert("Error: " + err.message);
+            startBtn.innerText = "Retry";
+            startBtn.disabled = false;
+        }
+    };
+
+    async function runInference() {
+        while (true) {
             try {
-                startBtn.innerText = "Initializing AI...";
-                
-                // Initialize the library
-                classifier = new EdgeImpulseClassifier();
-                await classifier.init();
-                
-                // Get camera and start
-                const devices = await classifier.getDevices();
-                if (devices.length === 0) throw new Error("No camera found");
-                
-                await classifier.start(devices[0].deviceId, document.getElementById('camera-container'));
-                
-                loadingText.style.display = 'none';
-                startBtn.innerText = "Scanner Active";
-                startBtn.disabled = true;
+                const result = await classifier.classify();
+                if (result.results && result.results.length > 0) {
+                    const top = result.results[0];
+                    const labelClean = top.label.toLowerCase().trim();
+                    
+                    document.getElementById('ai-label').innerText = `AI: ${top.label} (${(top.value * 100).toFixed(1)}%)`;
 
-                runInference();
-            } catch (err) {
-                alert("Error: " + err.message);
-                startBtn.innerText = "Try Again";
-                startBtn.disabled = false;
-            }
-        };
-
-        async function runInference() {
-            while (true) {
-                try {
-                    const result = await classifier.classify();
-                    if (result.results && result.results.length > 0) {
-                        const top = result.results[0];
-                        document.getElementById('ai-label').innerText = `AI: ${top.label} (${(top.value * 100).toFixed(1)}%)`;
-
-                        // AUTO-TRIGGER LOGIC
-                        if (top.label.toLowerCase() === "youritem" && top.value > 0.85) {
-                            sendToESP32("ADD");
-                            await new Promise(r => setTimeout(r, 3000)); // 3 second cooldown
-                        }
+                    // Check if detected item is in our allowed list and confidence is high
+                    if (MY_LABELS.includes(labelClean) && top.value > 0.85) {
+                        // We send the specific name so the LCD can show it!
+                        sendToESP32("ADD:" + top.label); 
+                        
+                        // 3 second cooldown to prevent double-counting
+                        await new Promise(r => setTimeout(r, 3000)); 
                     }
-                } catch (e) {
-                    console.error("Inference error", e);
                 }
-                await new Promise(r => setTimeout(r, 250));
-            }
+            } catch (e) { console.error(e); }
+            await new Promise(r => setTimeout(r, 200));
         }
+    }
 
-        // --- WebSocket Logic ---
-        connectBtn.onclick = () => {
-            const ip = document.getElementById('ipInput').value.trim();
-            if (!ip) return alert("Enter IP");
-            socket = new WebSocket(`ws://${ip}/ws`);
-            socket.onopen = () => { document.getElementById('status').innerText = "Connected!"; };
+    connectBtn.onclick = () => {
+        const ip = document.getElementById('ipInput').value.trim();
+        if (!ip) return alert("Enter ESP32 IP");
+        socket = new WebSocket(`ws://${ip}/ws`);
+        socket.onopen = () => { 
+            document.getElementById('status').innerText = "Linked to LCD"; 
+            document.getElementById('status').style.color = "green";
         };
+        socket.onerror = () => { alert("Check IP/WiFi"); };
+    };
 
-        function sendToESP32(cmd) {
-            if (socket && socket.readyState === WebSocket.OPEN) socket.send(cmd);
+    function sendToESP32(cmd) {
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(cmd);
         }
+    }
 
-        document.getElementById('addBtn').onclick = () => sendToESP32("ADD");
-        document.getElementById('removeBtn').onclick = () => sendToESP32("REMOVE");
+    document.getElementById('addBtn').onclick = () => sendToESP32("ADD:Manual");
+    document.getElementById('removeBtn').onclick = () => sendToESP32("REMOVE");
     </script>
 </body>
 </html>
