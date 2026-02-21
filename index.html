@@ -7,14 +7,17 @@
     <script src="edge-impulse-standalone.js"></script>
     <style>
         body { font-family: sans-serif; background: #f4f4f9; text-align: center; padding: 20px; }
-        #camera-container { width: 100%; max-width: 400px; margin: auto; border: 3px solid #3d61ff; border-radius: 10px; overflow: hidden; background: #000; }
+        #camera-container { width: 100%; max-width: 400px; margin: auto; border: 3px solid #3d61ff; border-radius: 10px; overflow: hidden; background: #000; position: relative; min-height: 300px; display: flex; align-items: center; justify-content: center;}
+        video { width: 100%; height: auto; display: block; }
         .controls { margin-top: 20px; display: flex; flex-direction: column; gap: 10px; align-items: center; }
         input { padding: 10px; border-radius: 5px; border: 1px solid #ccc; width: 200px; text-align: center; }
         .btn { padding: 15px 30px; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; color: white; width: 220px; }
+        #startBtn { background-color: #ff9800; margin-bottom: 10px; }
         #connectBtn { background-color: #4CAF50; }
         #addBtn { background-color: #3d61ff; }
         #removeBtn { background-color: #ff4c4c; }
         #status { font-weight: bold; color: #555; margin: 10px; }
+        #ai-label { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.7); color: #00ff00; padding: 5px 10px; border-radius: 5px; font-size: 14px; z-index: 10; }
     </style>
 </head>
 <body>
@@ -22,15 +25,17 @@
     <h2>AI Scanner Console</h2>
     
     <div class="controls">
-        <input type="text" id="ipInput" placeholder="Enter ESP32 IP (e.g. 192.168.1.50)">
-        <button id="connectBtn" class="btn">Connect to LCD</button>
+        <input type="text" id="ipInput" placeholder="Enter ESP32 IP">
+        <button id="connectBtn" class="btn">1. Connect to LCD</button>
+        <button id="startBtn" class="btn">2. Start Camera & AI</button>
         <div id="status">Status: Disconnected</div>
     </div>
 
     <hr>
 
     <div id="camera-container">
-        <p style="color: white; padding: 50px;">Camera Feed Loading...</p>
+        <div id="ai-label">AI: Waiting...</div>
+        <p id="loading-text" style="color: white; padding: 50px;">Camera Feed Loading...</p>
     </div>
 
     <div class="controls">
@@ -40,14 +45,63 @@
 
     <script>
         let socket;
+        let classifier;
         const ipInput = document.getElementById('ipInput');
         const connectBtn = document.getElementById('connectBtn');
+        const startBtn = document.getElementById('startBtn');
         const statusDiv = document.getElementById('status');
+        const aiLabel = document.getElementById('ai-label');
 
-        // --- WebSocket Logic ---
+        // --- 1. Start Camera and AI Logic ---
+        startBtn.onclick = async () => {
+            try {
+                startBtn.innerText = "Loading AI Model...";
+                
+                // Initialize Edge Impulse Classifier
+                classifier = new EdgeImpulseClassifier();
+                await classifier.init();
+                
+                // This starts the camera feed into the container
+                await classifier.init()
+                const devices = await classifier.getDevices();
+                await classifier.start(devices[0].deviceId, document.getElementById('camera-container'));
+                
+                document.getElementById('loading-text').style.display = 'none';
+                startBtn.innerText = "Scanner Running";
+                startBtn.style.backgroundColor = "#888";
+                startBtn.disabled = true;
+
+                // Start inference loop
+                runInference();
+            } catch (err) {
+                console.error(err);
+                alert("Error starting camera: " + err.message);
+            }
+        };
+
+        async function runInference() {
+            while (true) {
+                const result = await classifier.classify();
+                if (result.results && result.results.length > 0) {
+                    // Find the label with the highest score
+                    const top = result.results[0];
+                    aiLabel.innerText = `AI: ${top.label} (${(top.value * 100).toFixed(1)}%)`;
+
+                    // AUTO-TRIGGER: Change "YourItemName" to your specific label from Edge Impulse
+                    if (top.label === "YourItemName" && top.value > 0.85) {
+                        sendToESP32("ADD");
+                        // Add a small delay so it doesn't count the same object 100 times per second
+                        await new Promise(r => setTimeout(r, 2000)); 
+                    }
+                }
+                await new Promise(r => setTimeout(r, 200)); // Run every 200ms
+            }
+        }
+
+        // --- 2. WebSocket Connection ---
         connectBtn.onclick = () => {
             const ip = ipInput.value.trim();
-            if (!ip) return alert("Please enter an IP address");
+            if (!ip) return alert("Please enter the ESP32 IP address");
 
             statusDiv.innerText = "Connecting...";
             socket = new WebSocket(`ws://${ip}/ws`);
@@ -55,40 +109,25 @@
             socket.onopen = () => {
                 statusDiv.innerText = "Status: Connected to LCD";
                 statusDiv.style.color = "green";
-                connectBtn.innerText = "Connected";
                 connectBtn.style.backgroundColor = "#888";
             };
 
             socket.onclose = () => {
                 statusDiv.innerText = "Status: Connection Lost";
                 statusDiv.style.color = "red";
-                connectBtn.innerText = "Reconnect";
-                connectBtn.style.backgroundColor = "#4CAF50";
-            };
-
-            socket.onerror = (error) => {
-                alert("Could not connect to ESP32. Check the IP and WiFi.");
             };
         };
 
-        // --- Manual Buttons ---
-        document.getElementById('addBtn').onclick = () => {
-            if (socket && socket.readyState === WebSocket.OPEN) socket.send("ADD");
-        };
-
-        document.getElementById('removeBtn').onclick = () => {
-            if (socket && socket.readyState === WebSocket.OPEN) socket.send("REMOVE");
-        };
-
-        // --- AI Logic (Placeholder for Edge Impulse WASM) ---
-        // This function would be triggered by your model's classification loop
-        function onObjectDetected(label, confidence) {
-            if (label === "YourItemName" && confidence > 0.8) {
-                if (socket && socket.readyState === WebSocket.OPEN) {
-                    socket.send("ADD");
-                }
+        function sendToESP32(cmd) {
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                socket.send(cmd);
+            } else {
+                console.log("Command: " + cmd + " (Not sent: LCD disconnected)");
             }
         }
+
+        document.getElementById('addBtn').onclick = () => sendToESP32("ADD");
+        document.getElementById('removeBtn').onclick = () => sendToESP32("REMOVE");
     </script>
 </body>
 </html>
